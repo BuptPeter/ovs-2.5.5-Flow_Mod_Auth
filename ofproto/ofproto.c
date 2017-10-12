@@ -62,6 +62,16 @@
 #include "openvswitch/vlog.h"
 #include "bundles.h"
 
+//add code...
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <stdio.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <string.h>
+#include <fcntl.h>
+#include <sys/shm.h>
+
 VLOG_DEFINE_THIS_MODULE(ofproto);
 
 COVERAGE_DEFINE(ofproto_flush);
@@ -5291,6 +5301,40 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
                                     &ofpacts,
                                     u16_to_ofp(ofproto->max_ports),
                                     ofproto->n_tables);
+     /*
+    @PeterWang 2017-04-24
+    @Create a flie to FS
+    */
+    //*******************************************************************************************************//
+    FSpointer = fopen("/home/peter/Desktop/test.txt","w+");
+    fprintf(FSpointer, "%s\n","received a FLOW_MOD Info:");
+    fprintf(FSpointer, "%x / %x :%d\n\n",ofm.fm.cookie,ofm.fm.cookie_mask,ofm.fm.command);
+
+    int sock_cli = socket(AF_INET,SOCK_STREAM, 0);
+    ///定义sockaddr_in
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(MYPORT);  ///服务器端口
+    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");  ///服务器ip
+
+    ///连接服务器，成功返回0，错误返回-1
+    if (connect(sock_cli, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0)
+    {
+        perror("connect error!");
+        fprintf(FSpointer, "%s\n","connect error!");
+    }
+    char sendbuf[BUFFER_SIZE]="received a FLOW_MOD Info.";
+    ///发送
+    if(send(sock_cli, sendbuf, strlen(sendbuf),0)<0){
+        perror("send error!");
+        fprintf(FSpointer, "%s\n","send error!");
+    }
+    memset(sendbuf, 0, sizeof(sendbuf));
+    //关闭文件和连接
+    close(sock_cli);   
+    fclose(FSpointer);
+    //*******************************************************************************************************//
     if (!error) {
         error = ofproto_check_ofpacts(ofproto, ofm.fm.ofpacts,
                                       ofm.fm.ofpacts_len);
