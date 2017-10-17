@@ -62,7 +62,7 @@
 #include "openvswitch/vlog.h"
 #include "bundles.h"
 
-//add code...
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <stdio.h>
@@ -71,6 +71,10 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/shm.h>
+
+#include <match.h>
+
+
 
 VLOG_DEFINE_THIS_MODULE(ofproto);
 
@@ -5291,6 +5295,10 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
     struct ofpbuf ofpacts;
     enum ofperr error;
 
+    FILE *FSpointer;
+    #define MYPORT  11777
+    #define BUFFER_SIZE 1024
+
     error = reject_slave_controller(ofconn);
     if (error) {
         goto exit;
@@ -5301,14 +5309,20 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
                                     &ofpacts,
                                     u16_to_ofp(ofproto->max_ports),
                                     ofproto->n_tables);
-     /*
+    /*
     @PeterWang 2017-04-24
     @Create a flie to FS
     */
     //*******************************************************************************************************//
-    FSpointer = fopen("/home/peter/Desktop/test.txt","w+");
-    fprintf(FSpointer, "%s\n","received a FLOW_MOD Info:");
-    fprintf(FSpointer, "%x / %x :%d\n\n",ofm.fm.cookie,ofm.fm.cookie_mask,ofm.fm.command);
+    FSpointer = fopen("/home/peter/Desktop/test10.16.txt","w+");
+    char *s = match_to_string(&ofm.fm.match, OFP_DEFAULT_PRIORITY);
+    fprintf(FSpointer, "%s%s\n","received a FLOW_MOD Info(v0.2):",s);
+    fprintf(FSpointer, "%x / %x :%d\n\n",&ofm.fm.cookie,&ofm.fm.cookie_mask,&ofm.fm.command);
+
+
+    VLOG_INFO_RL(&rl, "received a flow_mod msg(match feild): %s",s);
+    free(s);
+
 
     int sock_cli = socket(AF_INET,SOCK_STREAM, 0);
     ///定义sockaddr_in
@@ -7957,3 +7971,7 @@ ofproto_port_set_realdev(struct ofproto *ofproto, ofp_port_t vlandev_ofp_port,
     }
     return error;
 }
+
+
+
+
