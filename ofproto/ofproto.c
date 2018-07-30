@@ -62,7 +62,6 @@
 #include "openvswitch/vlog.h"
 #include "bundles.h"
 
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <stdio.h>
@@ -74,8 +73,6 @@
 
 #include <match.h>
 
-
-
 VLOG_DEFINE_THIS_MODULE(ofproto);
 
 COVERAGE_DEFINE(ofproto_flush);
@@ -84,6 +81,8 @@ COVERAGE_DEFINE(ofproto_queue_req);
 COVERAGE_DEFINE(ofproto_recv_openflow);
 COVERAGE_DEFINE(ofproto_reinit_ports);
 COVERAGE_DEFINE(ofproto_update_port);
+
+int sock_cli=NULL;
 
 /* Default fields to use for prefix tries in each flow table, unless something
  * else is configured. */
@@ -5295,9 +5294,7 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
     struct ofpbuf ofpacts;
     enum ofperr error;
 
-    FILE *FSpointer;
-    #define MYPORT  11777
-    #define BUFFER_SIZE 1024
+    uint32_t buf_send_len;
 
     error = reject_slave_controller(ofconn);
     if (error) {
@@ -5309,50 +5306,14 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
                                     &ofpacts,
                                     u16_to_ofp(ofproto->max_ports),
                                     ofproto->n_tables);
-    /*
-    @PeterWang 2017-04-24
-    @Create a flie to FS
-    */
-    //*******************************************************************************************************//
-    FSpointer = fopen("/home/peter/Desktop/test10.16.txt","w+");
-    char *s = match_to_string(&ofm.fm.match, OFP_DEFAULT_PRIORITY);
-    fprintf(FSpointer, "%s%s\n","received a FLOW_MOD Info(v0.2):",s);
-    fprintf(FSpointer, "%x / %x :%d\n\n",&ofm.fm.cookie,&ofm.fm.cookie_mask,&ofm.fm.command);
-
-
-    VLOG_INFO_RL(&rl, "received a flow_mod msg(match feild): %s",s);
-    free(s);
-
-
-    int sock_cli = socket(AF_INET,SOCK_STREAM, 0);
-    ///定义sockaddr_in
-    struct sockaddr_in servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_port = htons(MYPORT);  ///服务器端口
-    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");  ///服务器ip
-
-    ///连接服务器，成功返回0，错误返回-1
-    if (connect(sock_cli, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0)
-    {
-        perror("connect error!");
-        fprintf(FSpointer, "%s\n","connect error!");
-    }
-    char sendbuf[BUFFER_SIZE]="received a FLOW_MOD Info.";
-    ///发送
-    if(send(sock_cli, sendbuf, strlen(sendbuf),0)<0){
-        perror("send error!");
-        fprintf(FSpointer, "%s\n","send error!");
-    }
-    memset(sendbuf, 0, sizeof(sendbuf));
-    //关闭文件和连接
-    close(sock_cli);   
-    fclose(FSpointer);
-    //*******************************************************************************************************//
     if (!error) {
         error = ofproto_check_ofpacts(ofproto, ofm.fm.ofpacts,
                                       ofm.fm.ofpacts_len);
     }
+    //=====================
+    char *match_str = match_to_string(&ofm.fm.match, OFP_DEFAULT_PRIORITY);
+    char *action_str = ofpact_name(*(&ofm.fm.ofpacts->type));
+    //====================
     if (!error) {
         struct flow_mod_requester req;
 
@@ -5363,7 +5324,19 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
     if (error) {
         goto exit_free_ofpacts;
     }
-
+    /*
+    @PeterWang 2018-07-17
+    @send match and action to ovs-hash
+    @wait to ovs-hash create 
+    */
+    //*******************************************************************************************************//
+    buf_send_len=strlen(match_str)+strlen(action_str)+1;
+    char * buf_send = xmalloc(buf_send_len);
+    sprintf(buf_send,"%s,%s",match_str,action_str);
+    VLOG_INFO_RL(&rl, "received a flow_mod msg.match_str:%s,action_str:%s",match_str,action_str);
+    _send_flow_mod_to_ovshash(buf_send,buf_send_len);
+    VLOG_INFO_RL(&rl, "send flow_mod msg to ovs-hash over.");
+    //*******************************************************************************************************//
     ofconn_report_flow_mod(ofconn, ofm.fm.command);
 
 exit_free_ofpacts:
@@ -5372,6 +5345,87 @@ exit:
     return error;
 }
 
+bool _IsSocketClosed(int clientSocket)  
+{  
+ char buff[32];  
+ int recvBytes = recv(clientSocket, buff, sizeof(buff), MSG_PEEK);  
+   
+ int sockErr = errno;  
+   
+ //cout << "In close function, recv " << recvBytes << " bytes, err " << sockErr << endl;  
+   
+ if( recvBytes > 0) //Get data  
+  return false;  
+   
+ if( (recvBytes == -1) && (sockErr == EWOULDBLOCK) ) //No receive data  
+  return false;  
+     
+ return true;  
+} 
+
+int _send_flow_mod_to_ovshash(char* buf,uint32_t buf_len){
+    #define MYPORT  11777
+    #define BUFFER_SIZE 1024
+    int16_t err;
+    ///定义sockaddr_in
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(MYPORT);  ///服务器端口11777 
+    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");  ///服务器ip
+    
+
+    if (sock_cli==NULL){//还没有建立连接
+        sock_cli = socket(AF_INET,SOCK_STREAM, 0);    
+        ///连接服务器，成功返回0，错误返回-1
+        err = connect(sock_cli, (struct sockaddr *)&servaddr, sizeof(servaddr));
+        if (err==-1){//连接失败
+            VLOG_INFO_RL(&rl,"connect to ovs-hash failed.");
+            return -1;
+            }
+        }
+    // else if (_IsSocketClosed(sock_cli)){//建立的连接断开了
+    //     err = connect(sock_cli, (struct sockaddr *)&servaddr, sizeof(servaddr));
+    //     if (err==-1){//连接失败
+    //         VLOG_INFO_RL(&rl,"##reconnect to ovs-hash failed.");
+    //         return -1;
+    //         }
+    //     VLOG_INFO_RL(&rl,"##reconnect to ovs-hash success.");
+    //     }
+    VLOG_INFO_RL(&rl,"connect is ready.");
+
+    err = send(sock_cli,buf,buf_len,0);
+    if(err==-1){//发送失败
+        VLOG_INFO_RL(&rl,"send msg to ovs-hash failed.");
+        //重新连接服务器，成功返回0，错误返回-1
+        sock_cli = socket(AF_INET,SOCK_STREAM, 0);
+        err = connect(sock_cli, (struct sockaddr *)&servaddr, sizeof(servaddr));
+        if (err==-1){//连接失败
+            VLOG_INFO_RL(&rl,"##reconnect to ovs-hash failed. %x",err);
+            return -1;
+            }
+        VLOG_INFO_RL(&rl,"##reconnect to ovs-hash success.");
+        err = send(sock_cli,buf,buf_len,0);
+        if(err==-1){//发送失败
+            VLOG_INFO_RL(&rl,"##resend msg to ovs-hash failed.");
+            return -1;
+            }
+        return -1;
+        }
+    VLOG_INFO_RL(&rl,"send msg to ovs-hash successful.");
+    char * buf_recv = xmalloc(BUFFER_SIZE);
+    err = recv(sock_cli,buf_recv,BUFFER_SIZE,0);//接收服务器端信息  
+    if (err==-1){//接受失败
+        VLOG_INFO_RL(&rl,"received msg from ovs-hash failed.");
+        free(buf_recv);
+        return -1;
+       }
+    buf_recv[err]='\0';
+    VLOG_INFO_RL(&rl,"received msg %s from ovs-hash successful.",buf_recv);
+    free(buf_recv);
+    return 0;
+}
+        
 static enum ofperr
 handle_flow_mod__(struct ofproto *ofproto, struct ofproto_flow_mod *ofm,
                   const struct flow_mod_requester *req)
@@ -7971,7 +8025,4 @@ ofproto_port_set_realdev(struct ofproto *ofproto, ofp_port_t vlandev_ofp_port,
     }
     return error;
 }
-
-
-
 

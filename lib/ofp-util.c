@@ -1955,12 +1955,12 @@ ofputil_decode_meter_mod(const struct ofp_header *oh,
             mm->meter.flags & OFPMF13_PKTPS) {
             return OFPERR_OFPMMFC_BAD_FLAGS;
         }
-        mm->meter.bands = bands->data;
 
         error = ofputil_pull_bands(&b, b.size, &mm->meter.n_bands, bands);
         if (error) {
             return error;
         }
+        mm->meter.bands = bands->data;
     }
     return 0;
 }
@@ -2695,7 +2695,7 @@ ofputil_pull_queue_get_config_reply(struct ofpbuf *reply,
 
         hdr = ofpbuf_at_assert(reply, 0, sizeof *hdr);
         prop_len = ntohs(hdr->len);
-        if (prop_len < sizeof *hdr || prop_len > reply->size || prop_len % 8) {
+        if (prop_len < sizeof *hdr || prop_len > len || prop_len % 8) {
             return OFPERR_OFPBRC_BAD_LEN;
         }
 
@@ -8039,6 +8039,7 @@ ofputil_pull_ofp11_buckets(struct ofpbuf *msg, size_t buckets_length,
         if (!ob) {
             VLOG_WARN_RL(&bad_ofmsg_rl, "buckets end with %"PRIuSIZE" leftover bytes",
                          buckets_length);
+            ofputil_bucket_list_destroy(buckets);
             return OFPERR_OFPGMFC_BAD_BUCKET;
         }
 
@@ -8046,11 +8047,13 @@ ofputil_pull_ofp11_buckets(struct ofpbuf *msg, size_t buckets_length,
         if (ob_len < sizeof *ob) {
             VLOG_WARN_RL(&bad_ofmsg_rl, "OpenFlow message bucket length "
                          "%"PRIuSIZE" is not valid", ob_len);
+            ofputil_bucket_list_destroy(buckets);
             return OFPERR_OFPGMFC_BAD_BUCKET;
         } else if (ob_len > buckets_length) {
             VLOG_WARN_RL(&bad_ofmsg_rl, "OpenFlow message bucket length "
                          "%"PRIuSIZE" exceeds remaining buckets data size %"PRIuSIZE,
                          ob_len, buckets_length);
+            ofputil_bucket_list_destroy(buckets);
             return OFPERR_OFPGMFC_BAD_BUCKET;
         }
         buckets_length -= ob_len;
@@ -8277,7 +8280,7 @@ parse_group_prop_ntr_selection_method(struct ofpbuf *payload,
                      "for select groups");
         return OFPERR_OFPBPC_BAD_VALUE;
     default:
-        OVS_NOT_REACHED();
+        return OFPERR_OFPGMFC_BAD_TYPE;
     }
 
     switch (group_cmd) {
@@ -8291,7 +8294,7 @@ parse_group_prop_ntr_selection_method(struct ofpbuf *payload,
                      "for add and delete group modifications");
         return OFPERR_OFPBPC_BAD_VALUE;
     default:
-        OVS_NOT_REACHED();
+        return OFPERR_OFPGMFC_BAD_COMMAND;
     }
 
     if (payload->size < sizeof *prop) {
@@ -8769,6 +8772,7 @@ ofputil_pull_ofp11_group_mod(struct ofpbuf *msg, enum ofp_version ofp_version,
         && gm->command == OFPGC11_DELETE
         && !list_is_empty(&gm->buckets)) {
         error = OFPERR_OFPGMFC_INVALID_GROUP;
+        ofputil_bucket_list_destroy(&gm->buckets);
     }
 
     return error;
@@ -8836,44 +8840,9 @@ ofputil_pull_ofp15_group_mod(struct ofpbuf *msg, enum ofp_version ofp_version,
     return error;
 }
 
-/* Converts OpenFlow group mod message 'oh' into an abstract group mod in
- * 'gm'.  Returns 0 if successful, otherwise an OpenFlow error code. */
-enum ofperr
-ofputil_decode_group_mod(const struct ofp_header *oh,
-                         struct ofputil_group_mod *gm)
+static enum ofperr
+ofputil_check_group_mod(const struct ofputil_group_mod *gm)
 {
-    enum ofp_version ofp_version = oh->version;
-    struct ofpbuf msg;
-    struct ofputil_bucket *bucket;
-    enum ofperr err;
-
-    ofpbuf_use_const(&msg, oh, ntohs(oh->length));
-    ofpraw_pull_assert(&msg);
-
-    ofputil_init_group_properties(&gm->props);
-
-    switch (ofp_version)
-    {
-    case OFP11_VERSION:
-    case OFP12_VERSION:
-    case OFP13_VERSION:
-    case OFP14_VERSION:
-        err = ofputil_pull_ofp11_group_mod(&msg, ofp_version, gm);
-        break;
-
-    case OFP15_VERSION:
-        err = ofputil_pull_ofp15_group_mod(&msg, ofp_version, gm);
-        break;
-
-    case OFP10_VERSION:
-    default:
-        OVS_NOT_REACHED();
-    }
-
-    if (err) {
-        return err;
-    }
-
     switch (gm->type) {
     case OFPGT11_INDIRECT:
         if (!list_is_singleton(&gm->buckets)) {
@@ -8903,6 +8872,7 @@ ofputil_decode_group_mod(const struct ofp_header *oh,
         return OFPERR_OFPGMFC_BAD_COMMAND;
     }
 
+    struct ofputil_bucket *bucket;
     LIST_FOR_EACH (bucket, list_node, &gm->buckets) {
         if (bucket->weight && gm->type != OFPGT11_SELECT) {
             return OFPERR_OFPGMFC_INVALID_GROUP;
@@ -8928,6 +8898,50 @@ ofputil_decode_group_mod(const struct ofp_header *oh,
     }
 
     return 0;
+}
+
+/* Converts OpenFlow group mod message 'oh' into an abstract group mod in
+ * 'gm'.  Returns 0 if successful, otherwise an OpenFlow error code. */
+enum ofperr
+ofputil_decode_group_mod(const struct ofp_header *oh,
+                         struct ofputil_group_mod *gm)
+{
+    enum ofp_version ofp_version = oh->version;
+    struct ofpbuf msg;
+    enum ofperr err;
+
+    ofpbuf_use_const(&msg, oh, ntohs(oh->length));
+    ofpraw_pull_assert(&msg);
+
+    ofputil_init_group_properties(&gm->props);
+
+    switch (ofp_version)
+    {
+    case OFP11_VERSION:
+    case OFP12_VERSION:
+    case OFP13_VERSION:
+    case OFP14_VERSION:
+        err = ofputil_pull_ofp11_group_mod(&msg, ofp_version, gm);
+        break;
+
+    case OFP15_VERSION:
+        err = ofputil_pull_ofp15_group_mod(&msg, ofp_version, gm);
+        break;
+
+    case OFP10_VERSION:
+    default:
+        OVS_NOT_REACHED();
+    }
+
+    if (err) {
+        return err;
+    }
+
+    err = ofputil_check_group_mod(gm);
+    if (err) {
+        ofputil_uninit_group_mod(gm);
+    }
+    return err;
 }
 
 /* Parse a queue status request message into 'oqsr'.
@@ -9412,6 +9426,10 @@ ofputil_decode_bundle_add(const struct ofp_header *oh,
     msg->bundle_id = ntohl(m->bundle_id);
     msg->flags = ntohs(m->flags);
 
+    /* Pull the inner ofp_header. */
+    if (b.size < sizeof(struct ofp_header)) {
+        return OFPERR_OFPBFC_MSG_BAD_LEN;
+    }
     msg->msg = b.data;
     if (msg->msg->version != oh->version) {
         return OFPERR_NXBFC_BAD_VERSION;
